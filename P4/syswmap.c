@@ -49,7 +49,7 @@ sys_wmap(void)
 	struct proc *curproc = myproc();
 	// get the amount of pages that need to be allocated 
 	int numPages = (length+4095)/4096;
-
+cprintf("pages: %d\n",numPages);
 	// looks at all mappings already made checking for overlap in memory
 	for(int i=0; i<curproc->wmapCount; i++) {
 		if(move == 1) 
@@ -107,19 +107,21 @@ sys_wmap(void)
 		 	addr+=0x1000; // increase addr	
 		} 
 	}
-//	for(int i=0; i<numPages; i++) {
-		//char *mem=kalloc(); 
+	for(int i=0; i<numPages; i++) {
+		char *mem=kalloc(); 
 		//if(mem==0){
 			// free for loop to i 
 	//	}
 		// Access the page directory of the current process
-	//	pde_t *pgdir = curproc->pgdir;
+		pde_t *pgdir = curproc->pgdir;
 	//	uint naddr=(uint)addr;
 	//	void *newaddr = (void *)naddr; //(void*)(va+0x1000*i)
-//		mappages(pgdir, (void *)(addr + 4096*i), 4096, V2P(mem), PTE_W|PTE_U);
+		pte_t *pte = (pte_t*)walkpgdir(curproc->pgdir, (void*)&addr+4096*i, 0);
+		if(!(*pte &PTE_P))
+		mappages(pgdir, (void *)(addr + 4096*i), 4096, V2P(mem), PTE_W|PTE_U);
 
-//	}
-	cprintf("done\n",addr);
+	}
+	cprintf("done\n",addr, length);
 	return addr;
 }
 
@@ -181,6 +183,7 @@ uint sys_wremap(void) {
 		if(newsize==0){}
 		if(flags==0){}
 
+	struct proc *curproc = myproc();
 	pde_t *pgdir = myproc()->pgdir; 
 	pte_t *pte = (pte_t*)walkpgdir(pgdir, (void*)&oldaddr, 0);
 		
@@ -204,13 +207,19 @@ uint sys_wremap(void) {
 			//numPages++; 
 		if(numPages != 0) {
 			 for(int i=0; i<numPages; i++) {
-			// 	mappages(pgdir, (void*)((uintptr_t)oldaddr+oldsize+0x1000*i), 4096, V2P(mem), PTE_W|PTE_U);
+			 		char *mem=kalloc(); 
+
+			 		mappages(pgdir, (void *)(oldaddr+oldsize + 4096*i), 4096, V2P(mem), PTE_W|PTE_U);
 			 }
+			 for(int i=0; i<myproc()->wmapCount; i++) {
+			 						if(myproc()->wmappings[i]->addr == oldaddr) {
+				curproc->wmappings[i]->length = newsize;
+			 						}}
 		}
 	}
 //	sys_wunmap(oldaddr);
 //	sys_wmap(oldaddr, newsize, flags);
-	return 0; 
+	return oldaddr; 
 }
 int sys_getpgdirinfo(void) {
 	// arg stuff 
@@ -224,25 +233,33 @@ int sys_getpgdirinfo(void) {
 	pde_t* pgdir = curproc->pgdir; 
 	// count for pages
 	int pages = 0;
+	pdinfo->n_upages = pages; 
 	//
+	int c = 0;
 	for(int i=0; i<32; i++) {
 		// checks if current pde has an entry 
 		if(!(pgdir[i] & PTE_P)) 
 			continue; 
+		
 
 		pte_t *pte = (pte_t*)P2V(PTE_ADDR(pgdir[i]));
 		// go over all pte 
-		for(int j=0; j<NPTENTRIES; j++) {
+		for(int j=0; j<(curproc->wmappings[i]->length+4095)/4096; j++) {
 			// checks is page is a user page + is present
-			if(pte[j] & PTE_P && pte[j] & PTE_U) {
+		//	if(pte[j] & PTE_P && pte[j] & PTE_U) {
 				// filling entrys in pgdirinfo 
-				pdinfo->va[pages] = PGADDR(i, j, 0);
+				pdinfo->va[pages] = curproc->wmappings[i]->addr+c*4096;// PGADDR(i, j, 0);
+				cprintf("pages; %d length %d\n",pdinfo->va[pages]+i*4096,(curproc->wmappings[i]->length+4095)/4096);
 				pdinfo->pa[pages] = PTE_ADDR(pte[j]);
 				pages++;
-			}
+				c++;
+		//	}
 		}
+		c=0;
 	}
 	pdinfo->n_upages = pages; 
+		cprintf("pages; %d\n",pages);
+
 	return 0; 
 }
 int sys_getwmapinfo(void) {
