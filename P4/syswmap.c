@@ -49,7 +49,7 @@ sys_wmap(void)
 	struct proc *curproc = myproc();
 	// get the amount of pages that need to be allocated 
 	int numPages = (length+4095)/4096;
-cprintf("pages: %d\n",numPages);
+//cprintf("pages: %d addr: %x\n",numPages,addr);
 	// looks at all mappings already made checking for overlap in memory
 	for(int i=0; i<curproc->wmapCount; i++) {
 		if(move == 1) 
@@ -65,7 +65,8 @@ cprintf("pages: %d\n",numPages);
 		}
 	}
 	// checks if the inserted addr is already mapped 
-	if(move==0) { 		 	
+	if(move==0) { 	
+//	cprintf("move==0");	 	
 		curproc->wmappings[curproc->wmapCount] = (struct wmapInfo *)kalloc();
 		curproc->wmappings[curproc->wmapCount]->addr = addr;
 		curproc->wmappings[curproc->wmapCount]->length = length;
@@ -73,11 +74,15 @@ cprintf("pages: %d\n",numPages);
 		curproc->wmappings[curproc->wmapCount]->fd = fd;
 		curproc->wmapCount++;
 	}else {
+//	cprintf("move==1");
 		 // look for new addr to map to
 		 addr = 0x60000000; // changes addr to start of memory
 		 int found = 0; // int checking if a spot in memory is available 
 		 //int count = 0;
 		 while(addr < 0x80000000) {
+		 	if(curproc->wmapCount==0) {
+		 		break;
+		 	}
 		 	for(int i=0; i<curproc->wmapCount; i++) {
 		 		uint curmap= (uint)curproc->wmappings[i]->addr;
 		 		if(!((uint)addr == curmap) && !(curproc->wmappings[i]->addr <= addr &&
@@ -102,6 +107,7 @@ cprintf("pages: %d\n",numPages);
 		 		curproc->wmappings[curproc->wmapCount]->flags = flags;
 		 		curproc->wmappings[curproc->wmapCount]->fd = fd;
 		 		curproc->wmapCount++; 
+		 	//	cprintf("taken %x\n",addr);
 		 		break;
 		 	}
 		 	addr+=0x1000; // increase addr	
@@ -114,10 +120,11 @@ cprintf("pages: %d\n",numPages);
 	//	}
 		// Access the page directory of the current process
 		pde_t *pgdir = curproc->pgdir;
+//		cprintf("before map: %x\n",addr);
 	//	uint naddr=(uint)addr;
 	//	void *newaddr = (void *)naddr; //(void*)(va+0x1000*i)
-		pte_t *pte = (pte_t*)walkpgdir(curproc->pgdir, (void*)&addr+4096*i, 0);
-		if(!(*pte &PTE_P))
+	//	pte_t *pte = (pte_t*)walkpgdir(curproc->pgdir, (void*)&addr+4096*i, 0);
+	//	if(!(*pte &PTE_P))
 		mappages(pgdir, (void *)(addr + 4096*i), 4096, V2P(mem), PTE_W|PTE_U);
 
 	}
@@ -226,22 +233,20 @@ int sys_getpgdirinfo(void) {
 	struct pgdirinfo *pdinfo;
 	if (argptr(0, (void*)&pdinfo, sizeof(*pdinfo)) < 0)
 		return -1;
-//if(pdinfo==0){}
 	// getting process
 	struct proc *curproc = myproc();
 	// getting pgdir
 	pde_t* pgdir = curproc->pgdir; 
 	// count for pages
 	int pages = 0;
-	pdinfo->n_upages = pages; 
 	//
 	int c = 0;
 	for(int i=0; i<32; i++) {
 		// checks if current pde has an entry 
 		if(!(pgdir[i] & PTE_P)) 
 			continue; 
-		
-
+		cprintf("present %d\n",curproc->wmappings[i]->length);
+		if((curproc->wmappings[i]->length) < 0) pages++;
 		pte_t *pte = (pte_t*)P2V(PTE_ADDR(pgdir[i]));
 		// go over all pte 
 		for(int j=0; j<(curproc->wmappings[i]->length+4095)/4096; j++) {
@@ -267,11 +272,10 @@ int sys_getwmapinfo(void) {
 	struct wmapinfo *wminfo; 
 	if (argptr(0, (void*)&wminfo, sizeof(*wminfo)) < 0)
 			return -1;
-//	wminfo = (struct wmapinfo*)kalloc();
 	struct proc *curproc = myproc(); 
 	// get number of mmaps from proc var wmapCount
 	wminfo->total_mmaps = curproc->wmapCount; 
-	
+	// add information to wmapinfo for every mapped process
 	for(int i=0; i<curproc->wmapCount; i++) {
 		wminfo->addr[i]=curproc->wmappings[i]->addr;
 		wminfo->length[i]=curproc->wmappings[i]->length;
