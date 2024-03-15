@@ -19,24 +19,142 @@
 #include "wmap.h"
 
 int 
-sys_getwmapinfo(void) {
+sys_wmap(void) {
+    int addr, length, flags, fd;
 
-    struct wmapinfo *wminfo;
-
-    if(argptr(0,(void*)&wminfo, sizeof(wminfo)) < 0){
-      return FAILED;
+    if (argint(0, &addr) < 0 || argint(1, &length) < 0 ||
+        argint(2, &flags) < 0 || argint(3, &fd) < 0) {
+        return -1;
     }
 
-    struct proc *curproc = myproc();
-    wminfo->total_mmaps = curproc->num_mmaps;
+    struct proc *p = myproc();
 
-    for(int i = 0; i < MAX_WMMAP_INFO; i++){
-      wminfo->addr[i] = curproc->mmaps[i] -> addr[i];
-      wminfo->length[i] = curproc->mmaps[i] -> length[i];
-      wminfo->n_loaded_pages[i] = curproc->mmaps[i] -> n_loaded_pages[i];
+    if (flags & MAP_FIXED) {
+        // Check for overlap with existing mappings
+        for (int i = 0; i < MAX_WMMAP_INFO; i++) {
+            if (p->mmaps[i].used) {
+                uint mmap_start = p->mmaps[i].addr;
+                uint mmap_end = mmap_start + p->mmaps[i].length;
+                if (!(addr + length <= mmap_start || addr >= mmap_end)) {
+                    return -1;  // Overlap detected, fail the mapping
+                }
+            }
+        }
+    } else {
+        addr = find_available_region(p, length);
+        if (addr == 0) {
+            return -1;  // No available region found
+        }
     }
-    return SUCCESS;
+
+    // Record the mapping in the process's mmaps array for lazy allocation
+    for (int i = 0; i < MAX_WMMAP_INFO; i++) {
+        if (!p->mmaps[i].used) {
+            p->mmaps[i].used = 1;
+            p->mmaps[i].addr = addr;
+            p->mmaps[i].length = length;
+            p->mmaps[i].flags = flags;
+            if (!(flags & MAP_ANONYMOUS)) {
+                p->mmaps[i].fd = fd;
+                p->mmaps[i].file_offset = 0; // Assuming the offset is 0 for simplicity
+            } else {
+                p->mmaps[i].fd = -1;
+                p->mmaps[i].file_offset = 0;
+            }
+            break;
+        }
+    }
+
+    return addr;  // Return the starting address of the mapping
 }
+
+
+int 
+sys_wunmap(void) {
+    uint addr;
+
+    if (argint(0, (int *)&addr) < 0) {
+        return -1;
+    }
+
+    return unmap_pages(myproc(), addr);
+}
+
+uint 
+sys_wremap(void) {
+    uint oldaddr;
+    int oldsize, newsize, flags;
+
+    if (argint(0, (int *)&oldaddr) < 0 || argint(1, &oldsize) < 0 || argint(2, &newsize) < 0 || argint(3, &flags) < 0) {
+        return (uint)-1; // Error in retrieving arguments
+    }
+
+    // Ensure that oldaddr is page aligned
+    if (oldaddr % PGSIZE != 0 || oldsize <= 0 || newsize <= 0) {
+        return (uint)-1; // Invalid arguments
+    }
+
+    // Ensure that oldsize is consistent with the existing mapping
+    struct proc *p = myproc();
+    int found = 0;
+    for (int i = 0; i < MAX_WMMAP_INFO; i++) {
+        if (p->mmaps[i].used && p->mmaps[i].addr == oldaddr && p->mmaps[i].length == oldsize) {
+            found = 1;
+            break;
+        }
+    }
+    if (!found) {
+        return (uint)-1; // Existing mapping not found
+    }
+
+    // Try to grow/shrink the mapping in-place
+    if (flags == 0) {
+        // Check if there's enough space to grow/shrink in-place
+        // For simplicity, assuming there's always enough space in this example
+        // You may need to handle this more rigorously in a real implementation
+        // Update the length of the existing mapping
+        for (int i = 0; i < MAX_WMMAP_INFO; i++) {
+            if (p->mmaps[i].used && p->mmaps[i].addr == oldaddr && p->mmaps[i].length == oldsize) {
+                p->mmaps[i].length = newsize;
+                return oldaddr; // Return the same address
+            }
+        }
+    }
+    // Try to move the mapping to a new address
+    else if (flags == MREMAP_MAYMOVE) {
+        // Find a new region for the mapping
+        uint newaddr = find_available_region(p, newsize);
+        if (newaddr == 0) {
+            return (uint)-1; // No available region found
+        }
+
+        // Copy the existing mapping to the new address
+        if (copy_mapping(p, oldaddr, oldsize, newaddr) < 0) {
+            return (uint)-1; // Failed to copy mapping
+        }
+
+        // Remove the old mapping
+        if (unmap_pages(p, oldaddr) < 0) {
+            return (uint)-1; // Failed to unmap old pages
+        }
+
+        // Record the new mapping in the process's mmaps array
+        for (int i = 0; i < MAX_WMMAP_INFO; i++) {
+            if (!p->mmaps[i].used) {
+                p->mmaps[i].used = 1;
+                p->mmaps[i].addr = newaddr;
+                p->mmaps[i].length = newsize;
+                p->mmaps[i].flags = p->mmaps[i].flags; // Assuming flags remain the same
+                p->mmaps[i].fd = p->mmaps[i].fd; // Assuming file descriptor remains the same
+                p->mmaps[i].file_offset = p->mmaps[i].file_offset; // Assuming file offset remains the same
+                return newaddr; // Return the new address
+            }
+        }
+    }
+
+    return (uint)-1; // Failed to remap
+}
+
 
 int sys_getpgdirinfo(void) {
     struct pgdirinfo *pdinfo;
@@ -79,219 +197,35 @@ int sys_getpgdirinfo(void) {
     return 0; // Success
 }
 
+int sys_getwmapinfo(void) {
+    struct wmapinfo *wminfo;
 
-uint 
-sys_wmap(void)
-{
-	uint addr; // va to (maybe) use  
-	int length; // size of mapping
-	int flags; // mapping specifications 
-	int fd; // file descripter if added 
-
-	// check valid user input 
-    if (argint(0, (int *)&addr) < 0 || argint(1, &length) < 0 ||
-        argint(2, &flags) < 0 || argint(3, &fd) < 0) {
-        return -1;  // if not valid 
+    if (argptr(0, (void *)&wminfo, sizeof(struct wmapinfo)) < 0) {
+        return -1;
     }
-    // checks if valid addr 
-    int move = 0; // var if the given addr should change
 
-    if(addr%4096!=0) {
-    	if(flags &MAP_FIXED)
-    		return -1; 
-    	int off=4096-addr%4096;
-    	addr+=off;	
+    struct proc *p = myproc();
+    int count = 0;
+
+    for (int i = 0; i < MAX_WMMAP_INFO && count < MAX_WMMAP_INFO; i++) {
+        if (p->mmaps[i].used) {
+            wminfo->addr[count] = p->mmaps[i].addr;
+            wminfo->length[count] = p->mmaps[i].length;
+            // Calculate the number of loaded pages for this mapping
+            wminfo->n_loaded_pages[count] = 0;
+            for (uint a = p->mmaps[i].addr; a < p->mmaps[i].addr + p->mmaps[i].length; a += PGSIZE) {
+                pte_t *pte = walkpgdir(p->pgdir, (char *)a, 0);
+                if (pte && (*pte & PTE_P)) {
+                    wminfo->n_loaded_pages[count]++;
+                }
+            }
+            count++;
+        }
     }
-	if(addr < 0x60000000 || addr > 0x80000000) {
-		if(flags &MAP_FIXED)
-		    return -1; 
-		move = 1; 
-	}
-	
-	// checks if address and length are in range
-	if(addr+length > 0x80000000) {
-		if(flags & MAP_FIXED)
-			return -1; 
-		move = 1; 
-	}
 
-	// Get the current process
-	struct proc *curproc = myproc();
-	// get the amount of pages that need to be allocated 
-	int numPages = (length+4095)/4096;
-//cprintf("pages: %d addr: %x\n",numPages,addr);
-	// looks at all mappings already made checking for overlap in memory
-	for(int i=0; i<curproc->num_mmaps; i++) {
-		if(move == 1) 
-			break;
-		if((curproc->mmaps[i]->addr[i] <= addr &&
-			curproc->mmaps[i]->addr[i]+(curproc->mmaps[i]->length[i]) >= addr) ||
-			(curproc->mmaps[i]->addr[i] <= (addr+length) &&
-			curproc->mmaps[i]->addr[i]+(curproc->mmaps[i]->length[i]) >= (addr+length))) {
-			// if there's overlap and map fixed, return 
-			if(flags & MAP_FIXED) 
-				return -1;
-			move = 1; 
-		}
-	}
-	// checks if the inserted addr is already mapped 
-	if(move==0) { 	
-//	cprintf("move==0");	 	
-		curproc->mmaps[curproc->num_mmaps] = (struct wmapinfo *)kalloc();
-		curproc->mmaps[curproc->num_mmaps]->addr[curproc->num_mmaps] = addr;
-		curproc->mmaps[curproc->num_mmaps]->length[curproc->num_mmaps] = length;
-		curproc->num_mmaps++;
-	}else {
-//	cprintf("move==1");
-		 // look for new addr to map to
-		 addr = 0x60000000; // changes addr to start of memory
-		 int found = 0; // int checking if a spot in memory is available 
-		 //int count = 0;
-		 while(addr < 0x80000000) {
-		 	if(curproc->num_mmaps==0) {
-		 		break;
-		 	}
-		 	for(int i=0; i<curproc->num_mmaps; i++) {
-		 		uint curmap= (uint)curproc->mmaps[i]->addr[i];
-		 		if(!((uint)addr == curmap) && !(curproc->mmaps[i]->addr[i] <= addr &&
-		 			curproc->mmaps[i]->addr[i]+(curproc->mmaps[i]->length[i]) >= addr) &&
-		 			!(curproc->mmaps[i]->addr[i] <= (addr+length) &&
-		 			curproc->mmaps[i]->addr[i]+(curproc->mmaps[i]->length[i]) >= (addr+length)) &&
-		 			!(curproc->mmaps[i]->addr[i] > (addr) &&
-		 					 			curproc->mmaps[i]->addr[i]< (addr+length))) {
-		 			// if there's a spot in memory 
-		 			found = 1;  
-		 		}else {
-		 			// if its found the spot is taken, break out of loop 
-		 			found = 0;
-		 			break;
-		 		}
-		 	}
-		 	if(found == 1) {
-		 		// if addr found map it and break out of loop
-		 		curproc->mmaps[curproc->num_mmaps] = (struct wmapinfo *)kalloc();
-		 		curproc->mmaps[curproc->num_mmaps]->addr[curproc->num_mmaps] = addr;
-		 		curproc->mmaps[curproc->num_mmaps]->length[curproc->num_mmaps] = length;
-		 		curproc->num_mmaps++; 
-		 	//	cprintf("taken %x\n",addr);
-		 		break;
-		 	}
-		 	addr+=0x1000; // increase addr	
-		} 
-	}
-	for(int i=0; i<numPages; i++) {
-		char *mem=kalloc(); 
-		//if(mem==0){
-			// free for loop to i 
-	//	}
-		// Access the page directory of the current process
-		pde_t *pgdir = curproc->pgdir;
-//		cprintf("before map: %x\n",addr);
-	//	uint naddr=(uint)addr;
-	//	void *newaddr = (void *)naddr; //(void*)(va+0x1000*i)
-	//	pte_t *pte = (pte_t*)walkpgdir(curproc->pgdir, (void*)&addr+4096*i, 0);
-	//	if(!(*pte &PTE_P))
-		mappages(pgdir, (void *)(addr + 4096*i), 4096, V2P(mem), PTE_W|PTE_U);
+    wminfo->total_mmaps = count;
 
-	}
-	cprintf("done\n",addr, length);
-	return addr;
-}
-
-int sys_wunmap(void) {
-	uint addr; 
-	if (argint(0, (int*)&addr) < 0) {
-		return -1; 
-	}
-	
-//	if(addr==0){}
-	struct proc *curproc = myproc();
-	pde_t *pgdir = curproc->pgdir; 
-	// addr thing wrong prob
-	pte_t *pte = (pte_t*)walkpgdir(pgdir, (void*)&addr, 0);
-	uint physical_address = PTE_ADDR(*pte);
-	if(physical_address==0){}
-	//	*pte=0;
-	//get mapping-> get pde-> pte-> unmap eevrything PTE_U
-		//int length = 0;
-	// free from wmappings array in proc
-	for(int i=0; i<curproc->num_mmaps; i++) {
-		if(curproc->mmaps[i]->addr[i] == addr) {
-			// free inside pte
-			for(int j=0; j<curproc->mmaps[i]->length[i]; j++) {
-			//	kfree(P2V(physical_address+4096*i));
-			} 
-			// move everything at last addr to this addr (so when wmap again wont override current thing)
-			if(i == curproc->num_mmaps) {
-				myproc()->mmaps[i]=0;
-			}else {
-				int lastIn = curproc->num_mmaps-1;
-				curproc->mmaps[i]->addr[i] = curproc->mmaps[lastIn]->addr[lastIn];
-				curproc->mmaps[i]->length[i] = curproc->mmaps[lastIn]->length[lastIn];
-			}
-			
-			myproc()->num_mmaps--;
-		//	kfree((char *)curproc->wmappings[i]);
-		}
-	}
-	
-	*pte = 0;
-	return 0; 
-}
-
-uint sys_wremap(void) {
-	uint oldaddr;
-	int oldsize;
-	int newsize;
-	int flags; 
-	
-
-	if (argint(0, (int*)&oldaddr) < 0 || argint(1, &oldsize) < 0 ||
-	        argint(2, &newsize) < 0 || argint(3, &flags) < 0) {
-	        return 0;  // if not valid 
-	}
-	if(oldaddr==0){}
-		if(oldsize==0){}
-		if(newsize==0){}
-		if(flags==0){}
-
-	struct proc *curproc = myproc();
-	pde_t *pgdir = myproc()->pgdir; 
-	pte_t *pte = (pte_t*)walkpgdir(pgdir, (void*)&oldaddr, 0);
-		
-	if(oldsize > newsize) {
-		if(pte != 0) {
-			
-					for(int i=0; i<myproc()->num_mmaps; i++) {
-						if(myproc()->mmaps[i]->addr[i] == oldaddr) {
-							//length = myproc()->wmappings[i]->length;
-							// doesnt remove the map pages tho 
-							myproc()->mmaps[i]->length[i]=newsize;
-							//myproc()->wmapCount--;
-							break;
-						}
-					}
-				
-		}	
-	}else {
-		int numPages = (newsize-oldsize+4095)/4096;
-		//if(newsize%4096 != 0) 
-			//numPages++; 
-		if(numPages != 0) {
-			 for(int i=0; i<numPages; i++) {
-			 		char *mem=kalloc(); 
-
-			 		mappages(pgdir, (void *)(oldaddr+oldsize + 4096*i), 4096, V2P(mem), PTE_W|PTE_U);
-			 }
-			 for(int i=0; i<myproc()->num_mmaps; i++) {
-			 						if(myproc()->mmaps[i]->addr[i] == oldaddr) {
-				curproc->mmaps[i]->length[i] = newsize;
-			 						}}
-		}
-	}
-//	sys_wunmap(oldaddr);
-//	sys_wmap(oldaddr, newsize, flags);
-	return oldaddr; 
+    return 0; // Success
 }
 
 // Fetch the nth word-sized system call argument as a file descriptor

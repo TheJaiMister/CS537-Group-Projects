@@ -33,7 +33,7 @@ void            fileinit(void);
 int             fileread(struct file*, char*, int n);
 int             filestat(struct file*, struct stat*);
 int             filewrite(struct file*, char*, int n);
-
+void            fileseek(struct file *f, uint offset);
 // fs.c
 void            readsb(int dev, struct superblock *sb);
 int             dirlink(struct inode*, char*, uint);
@@ -187,6 +187,10 @@ int             copyout(pde_t*, uint, void*, uint);
 void            clearpteu(pde_t *pgdir, char *uva);
 int             mappages(pde_t *pgdir, void *va, uint size, uint pa, int perm);
 pte_t *         walkpgdir(pde_t *pgdir, const void *va, int alloc);
+uint            find_available_region(struct proc *p, uint length);
+int             unmap_pages(struct proc *p, uint addr);
+int             find_mapping_index(struct proc *p, int addr, int size);
+int             copy_mapping(struct proc *p, uint oldaddr, int oldsize, uint newaddr);
 
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))

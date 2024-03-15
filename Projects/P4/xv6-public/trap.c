@@ -14,6 +14,8 @@ extern uint vectors[];  // in vectors.S: array of 256 entry pointers
 struct spinlock tickslock;
 uint ticks;
 
+pte_t *walkpgdir(pde_t *pgdir, const void *va, int alloc);
+
 void
 tvinit(void)
 {
@@ -47,6 +49,59 @@ trap(struct trapframe *tf)
   }
 
   switch(tf->trapno){
+    case T_PGFLT:
+{
+    uint fault_addr = rcr2();
+    struct proc *p = myproc();
+    pte_t *pte = walkpgdir(p->pgdir, (void *)fault_addr, 0);
+
+    if (pte && (*pte & PTE_P) && (*pte & PTE_COW)) {
+        // Handle copy-on-write fault
+        char *mem = kalloc();
+        if (mem == 0) {
+            cprintf("Out of memory\n");
+            break;
+        }
+        memmove(mem, (char *)P2V(PTE_ADDR(*pte)), PGSIZE);
+        *pte = V2P(mem) | PTE_FLAGS(*pte);
+        *pte &= ~PTE_COW;  // Clear COW bit
+        *pte |= PTE_W;     // Set write bit
+        lcr3(V2P(p->pgdir));  // Flush TLB
+        return;  // Handled the page fault
+    }
+
+    for (int i = 0; i < MAX_WMMAP_INFO; i++) {
+        if (p->mmaps[i].used && fault_addr >= p->mmaps[i].addr &&
+            fault_addr < p->mmaps[i].addr + p->mmaps[i].length) {
+            // Fault address is part of a mapping
+            char *mem = kalloc();
+            if (mem == 0) {
+                cprintf("Out of memory\n");
+                break;
+            }
+            memset(mem, 0, PGSIZE);
+
+            if (p->mmaps[i].fd != -1) {
+                // File-backed mapping
+                struct file *f = p->ofile[p->mmaps[i].fd];
+                fileseek(f, (fault_addr - p->mmaps[i].addr) + p->mmaps[i].file_offset);
+                fileread(f, mem, PGSIZE);
+            }
+
+            if (mappages(p->pgdir, (void *)PGROUNDDOWN(fault_addr),
+                         PGSIZE, V2P(mem), PTE_W|PTE_U) < 0) {
+                kfree(mem);
+                cprintf("mappages failed\n");
+                break;
+            }
+            return;  // Handled the page fault
+        }
+    }
+
+    cprintf("Segmentation Fault\n");
+    p->killed = 1;
+}
+break;
   case T_IRQ0 + IRQ_TIMER:
     if(cpuid() == 0){
       acquire(&tickslock);
@@ -77,30 +132,8 @@ trap(struct trapframe *tf)
             cpuid(), tf->cs, tf->eip);
     lapiceoi();
     break;
-  case T_PGFLT: // T_PGFLT = 14
-    cprintf("entering page fault\n");
-    uint va = rcr2();
-    struct proc *curproc = myproc();
-    va = PGROUNDDOWN(va);
-    if(va <= curproc->sz){
-      char* mem = kalloc();
-      if(mem == 0){
-        cprintf("allocuvm out of memory\n");
-        myproc()->killed = 1;
-      }else{
-        memset(mem, 0, PGSIZE);
-        if(mappages(curproc->pgdir, (char*)va, PGSIZE, V2P(mem), PTE_W|PTE_U) < 0){
-          cprintf("allocuvm out of memory (2)\n");
-          //deallocuvm(pgdir, newsz, oldsz);
-          //kfree(mem);
-          myproc()->killed = 1;
-        }
-      }
-    }
-    else{
-        cprintf("Segmentation Fault\n");
-        // kill the process
-    }
+    //page fault
+  
 
   //PAGEBREAK: 13
   default:

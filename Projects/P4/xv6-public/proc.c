@@ -111,10 +111,8 @@ found:
   p->context = (struct context*)sp;
   memset(p->context, 0, sizeof *p->context);
   p->context->eip = (uint)forkret;
-
-  // for syscalls
+  // inialize wmapCount to 0
   p->num_mmaps = 0;
-
   return p;
 }
 
@@ -199,6 +197,44 @@ fork(void)
     np->state = UNUSED;
     return -1;
   }
+
+  // Copy memory mappings from parent to child
+  for (i = 0; i < MAX_WMMAP_INFO; i++) {
+      if (curproc->mmaps[i].used) {
+          if (curproc->mmaps[i].flags & MAP_PRIVATE) {
+              // Deep copy for MAP_PRIVATE
+              np->mmaps[i] = curproc->mmaps[i];
+              np->mmaps[i].addr = find_available_region(np, np->mmaps[i].length);
+              if (np->mmaps[i].addr == 0) {
+                  // Failed to find available region
+                  return -1;
+              }
+              // Copy the contents of the mapping
+              if (copy_mapping(np, curproc->mmaps[i].addr, curproc->mmaps[i].length, np->mmaps[i].addr) < 0) {
+                  // Failed to copy mapping contents
+                  return -1;
+              }
+          } else if (curproc->mmaps[i].flags & MAP_SHARED) {
+            // Shallow copy for MAP_SHARED
+            np->mmaps[i] = curproc->mmaps[i];
+            np->mmaps[i].addr = curproc->mmaps[i].addr; // Same address in child
+            // Map the same physical pages to the child process
+            for (uint va = curproc->mmaps[i].addr; va < curproc->mmaps[i].addr + curproc->mmaps[i].length; va += PGSIZE) {
+                pte_t *pte = walkpgdir(np->pgdir, (void *)va, 0);
+                if (!pte || !(*pte & PTE_P)) {
+                    // PTE not found
+                    return -1;
+                }
+                // Map the same physical page in child's page table
+                if (mappages(np->pgdir, (void *)va, PGSIZE, PTE_ADDR(*pte), *pte & PTE_FLAGS(*pte)) < 0) {
+                    // Failed to map page
+                    return -1;
+                }
+            }
+        }
+      }
+  }
+
   np->sz = curproc->sz;
   np->parent = curproc;
   *np->tf = *curproc->tf;
@@ -220,9 +256,11 @@ fork(void)
   np->state = RUNNABLE;
 
   release(&ptable.lock);
-
   return pid;
 }
+
+
+
 
 // Exit the current process.  Does not return.
 // An exited process remains in the zombie state

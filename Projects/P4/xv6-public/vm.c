@@ -102,7 +102,7 @@ mappages(pde_t *pgdir, void *va, uint size, uint pa, int perm)
 
 // This table defines the kernel's mappings, which are present in
 // every process's page table.
-static struct kmap {
+struct kmap {
   void *virt;
   uint phys_start;
   uint phys_end;
@@ -385,10 +385,132 @@ copyout(pde_t *pgdir, uint va, void *p, uint len)
   return 0;
 }
 
-//PAGEBREAK!
-// Blank page.
-//PAGEBREAK!
-// Blank page.
-//PAGEBREAK!
-// Blank page.
+// Helper function to find an available region in the virtual address space
+uint find_available_region(struct proc *p, uint length) {
+    uint start = 0x60000000;  // Start of the region where mappings are allowed
+    uint end = 0x80000000;    // End of the region where mappings are allowed
 
+    // Sort the mappings by their starting address
+    for (int i = 0; i < MAX_WMMAP_INFO - 1; i++) {
+        for (int j = i + 1; j < MAX_WMMAP_INFO; j++) {
+            if (p->mmaps[i].used && p->mmaps[j].used && p->mmaps[i].addr > p->mmaps[j].addr) {
+                // Swap the mappings
+                struct mmap temp = p->mmaps[i];
+                p->mmaps[i] = p->mmaps[j];
+                p->mmaps[j] = temp;
+            }
+        }
+    }
+
+    // Look for available regions between mappings
+    for (int i = 0; i < MAX_WMMAP_INFO; i++) {
+        uint gap_start = (i == 0) ? start : p->mmaps[i - 1].addr + p->mmaps[i - 1].length;
+        uint gap_end = (i < MAX_WMMAP_INFO && p->mmaps[i].used) ? p->mmaps[i].addr : end;
+
+        if (gap_end - gap_start >= length) {
+            return gap_start;  // Found an available region
+        }
+    }
+
+    return 0;  // No available region found
+}
+
+// Helper function to unmap pages
+int unmap_pages(struct proc *p, uint addr) {
+    for (int i = 0; i < MAX_WMMAP_INFO; i++) {
+        if (p->mmaps[i].used && p->mmaps[i].addr == addr) {
+            // Check if the mapping is shared and file-backed
+            int is_shared = p->mmaps[i].flags & MAP_SHARED;
+            int is_file_backed = p->mmaps[i].fd != -1;
+
+            if (is_shared && is_file_backed) {
+                struct file *f = p->ofile[p->mmaps[i].fd];
+                fileseek(f, p->mmaps[i].file_offset);  // Seek to the correct position in the file
+
+                // Write the pages back to the file
+                for (uint a = addr; a < addr + p->mmaps[i].length; a += PGSIZE) {
+                    pte_t *pte = walkpgdir(p->pgdir, (char *)a, 0);
+                    if (pte && (*pte & PTE_P)) {
+                        uint pa = PTE_ADDR(*pte);
+                        char *v = P2V(pa);
+                        filewrite(f, v, PGSIZE);
+                    }
+                }
+            }
+
+            // Unmap the pages
+            for (uint a = addr; a < addr + p->mmaps[i].length; a += PGSIZE) {
+                pte_t *pte = walkpgdir(p->pgdir, (char *)a, 0);
+                if (pte && (*pte & PTE_P)) {
+                    uint pa = PTE_ADDR(*pte);
+                    char *v = P2V(pa);
+                    kfree(v);
+                    *pte = 0;
+                }
+            }
+
+            // Mark the mmap entry as unused
+            p->mmaps[i].used = 0;
+
+            // Invalidate the TLB
+            lcr3(V2P(p->pgdir));
+
+            return 0;  // Success
+        }
+    }
+    return -1;  // Mapping not found
+}
+
+// Helper function to find the index of the mapping in the process's mmaps array
+// Returns -1 if the mapping is not found
+int find_mapping_index(struct proc *p, int addr, int size) {
+    for (int i = 0; i < MAX_WMMAP_INFO; i++) {
+        if (p->mmaps[i].used && p->mmaps[i].addr == addr && p->mmaps[i].length == size) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+// Helper function to copy the contents of the old mapping to the new address
+// Returns 0 on success, or -1 on failure
+int copy_mapping(struct proc *p, uint oldaddr, int oldsize, uint newaddr) {
+    // Determine the number of pages to copy
+    int num_pages = PGROUNDUP(oldsize) / PGSIZE;
+    char *src, *dst;
+    pte_t *pte;
+
+    for (int i = 0; i < num_pages; i++) {
+        src = (char *)oldaddr + (i * PGSIZE);
+        dst = (char *)newaddr + (i * PGSIZE);
+
+        // Get the page table entry for the old address
+        pte = walkpgdir(p->pgdir, src, 0);
+        if (!pte || !(*pte & PTE_P)) {
+            return -1;  // Page table entry not found or not present
+        }
+
+        // Allocate a new physical page for the copy
+        char *new_page = kalloc();
+        if (!new_page) {
+            return -1;  // Failed to allocate memory
+        }
+
+        // Copy the contents of the old page to the new page
+        memmove(new_page, src, PGSIZE);
+
+        // Map the new physical page to the new virtual address
+        if (mappages(p->pgdir, dst, PGSIZE, V2P(new_page), PTE_W | PTE_U) < 0) {
+            kfree(new_page);
+            return -1;  // Failed to map new page
+        }
+    }
+
+    return 0;  // Copy successful
+}
+//PAGEBREAK!
+// Blank page.
+//PAGEBREAK!
+// Blank page.
+//PAGEBREAK!
+// Blank page.

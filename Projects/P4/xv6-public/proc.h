@@ -1,6 +1,6 @@
+// Per-CPU state
 #include "wmap.h"
 
-// Per-CPU state
 struct cpu {
   uchar apicid;                // Local APIC ID
   struct context *scheduler;   // swtch() here to enter scheduler
@@ -36,6 +36,15 @@ struct context {
 
 enum procstate { UNUSED, EMBRYO, SLEEPING, RUNNABLE, RUNNING, ZOMBIE };
 
+struct mmap {
+    uint addr;      // Starting address of the mapping
+    uint length;    // Length of the mapping in bytes
+    int flags;      // Flags used for the mapping
+    int used;       // Indicates if this mmap entry is in use
+    int fd;         // File descriptor for file-backed mappings (-1 for anonymous mappings)
+    uint file_offset; // Offset within the file for file-backed mappings
+};
+
 // Per-process state
 struct proc {
   uint sz;                     // Size of process memory (bytes)
@@ -51,10 +60,9 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
-
-  // Fields for getwmapinfo
-  struct wmapinfo *mmaps[MAX_WMMAP_INFO];
-  int num_mmaps;
+  // array of structs length addr flags, fd, holds info form wmap for lazy allocation 
+  struct mmap mmaps[MAX_WMMAP_INFO];  // Array to store memory mappings  
+  int num_mmaps; 
 };
 
 // Process memory is laid out contiguously, low addresses first:
