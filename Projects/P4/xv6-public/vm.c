@@ -437,18 +437,18 @@ int unmap_pages(struct proc *p, uint addr) {
                     }
                 }
             }
-
-            // Unmap the pages
-            for (uint a = addr; a < addr + p->mmaps[i].length; a += PGSIZE) {
-                pte_t *pte = walkpgdir(p->pgdir, (char *)a, 0);
-                if (pte && (*pte & PTE_P)) {
-                    uint pa = PTE_ADDR(*pte);
-                    char *v = P2V(pa);
-                    kfree(v);
-                    *pte = 0;
-                }
+            if(!is_shared) {
+              // Unmap the pages
+              for (uint a = addr; a < addr + p->mmaps[i].length; a += PGSIZE) {
+                  pte_t *pte = walkpgdir(p->pgdir, (char *)a, 0);
+                  if (pte && (*pte & PTE_P)) {
+                      uint pa = PTE_ADDR(*pte);
+                      char *v = P2V(pa);
+                      kfree(v);
+                      *pte = 0;
+                  }
+              }
             }
-
             // Mark the mmap entry as unused
             p->mmaps[i].used = 0;
 

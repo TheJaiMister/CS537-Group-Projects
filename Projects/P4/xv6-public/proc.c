@@ -217,10 +217,9 @@ fork(void)
           } else if (curproc->mmaps[i].flags & MAP_SHARED) {
             // Shallow copy for MAP_SHARED
             np->mmaps[i] = curproc->mmaps[i];
-            np->mmaps[i].addr = curproc->mmaps[i].addr; // Same address in child
             // Map the same physical pages to the child process
             for (uint va = curproc->mmaps[i].addr; va < curproc->mmaps[i].addr + curproc->mmaps[i].length; va += PGSIZE) {
-                pte_t *pte = walkpgdir(np->pgdir, (void *)va, 0);
+                pte_t *pte = walkpgdir(curproc->pgdir, (void *)va, 0);
                 if (!pte || !(*pte & PTE_P)) {
                     // PTE not found
                     return -1;
@@ -275,6 +274,12 @@ exit(void)
   if(curproc == initproc)
     panic("init exiting");
 
+  for (int i = 0; i < MAX_WMMAP_INFO; i++) {
+    for (uint va = curproc->mmaps[i].addr; va < curproc->mmaps[i].addr + curproc->mmaps[i].length; va += PGSIZE) {
+        pte_t *pte = walkpgdir(curproc->pgdir, (void *)va, 0);
+        *pte = 0;
+    }
+  }
   // Close all open files.
   for(fd = 0; fd < NOFILE; fd++){
     if(curproc->ofile[fd]){
@@ -301,7 +306,7 @@ exit(void)
         wakeup1(initproc);
     }
   }
-
+  
   // Jump into the scheduler, never to return.
   curproc->state = ZOMBIE;
   sched();
