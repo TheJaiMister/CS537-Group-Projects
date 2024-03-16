@@ -51,16 +51,19 @@ sys_wmap(void)
 	int numPages = (length+4095)/4096;
 //cprintf("pages: %d addr: %x\n",numPages,addr);
 	// looks at all mappings already made checking for overlap in memory
+	// removed equals
 	for(int i=0; i<curproc->wmapCount; i++) {
 		if(move == 1) 
 			break;
 		if((curproc->wmappings[i]->addr <= addr &&
 			curproc->wmappings[i]->addr+(curproc->wmappings[i]->length) >= addr) ||
-			(curproc->wmappings[i]->addr <= (addr+length) &&
-			curproc->wmappings[i]->addr+(curproc->wmappings[i]->length) >= (addr+length))) {
+			(curproc->wmappings[i]->addr < (addr+length) &&
+			curproc->wmappings[i]->addr+(curproc->wmappings[i]->length) > (addr+length))) {
 			// if there's overlap and map fixed, return 
-			if(flags & MAP_FIXED) 
+			if(flags & MAP_FIXED) {
+				cprintf("here: want %x %d \n have %x %d \n", addr+length, length, curproc->wmappings[i]->addr, curproc->wmappings[i]->length);
 				return -1;
+			}
 			move = 1; 
 		}
 	}
@@ -181,16 +184,13 @@ uint sys_wremap(void) {
 	int oldsize;
 	int newsize;
 	int flags; 
-	
 
 	if (argint(0, (int*)&oldaddr) < 0 || argint(1, &oldsize) < 0 ||
 	        argint(2, &newsize) < 0 || argint(3, &flags) < 0) {
 	        return 0;  // if not valid 
 	}
-	if(oldaddr==0){}
-		if(oldsize==0){}
-		if(newsize==0){}
-		if(flags==0){}
+
+	if(flags==0){}
 
 	struct proc *curproc = myproc();
 	pde_t *pgdir = myproc()->pgdir; 
@@ -212,15 +212,82 @@ uint sys_wremap(void) {
 				
 		}	
 	}else {
-		/*int found = 0; // checks if map has to move 
+		int found = 1; // checks if map has to move 
+		int index = -1; 
+		for(int i=0; i<curproc->wmapCount; i++) {
+			if((uint)(oldaddr) == curproc->wmappings[i]->addr) {
+						cprintf("indxe found\n");
+							index=i;
+							break; 
+						}
+		}
 		for(int i=0; i<curproc->wmapCount; i++) {
 			uint curmap= (uint)curproc->wmappings[i]->addr;
+			if((uint)(oldaddr) == curmap) {
+				continue; 
+			}
+					 		if(
+					 		/*(curproc->wmappings[i]->addr <= oldaddr &&
+					curproc->wmappings[i]->addr+(curproc->wmappings[i]->length) >= oldaddr) ||
+					 (curproc->wmappings[i]->addr < (oldaddr+newsize) &&
+					 	curproc->wmappings[i]->addr+(curproc->wmappings[i]->length) > (oldaddr+newsize))*/
+					 	!((uint)oldaddr == curmap) && !(curproc->wmappings[i]->addr <= oldaddr &&
+					 						 			curproc->wmappings[i]->addr+(curproc->wmappings[i]->length) >= oldaddr) &&
+					 						 			!(curproc->wmappings[i]->addr <= (oldaddr+newsize) &&
+					 						 			curproc->wmappings[i]->addr+(curproc->wmappings[i]->length) >= (oldaddr+newsize)) &&
+					 						 			!(curproc->wmappings[i]->addr > (oldaddr) &&
+					 						 			curproc->wmappings[i]->addr< (oldaddr+newsize))
+					 	) {
+					 			// if there's a spot in memory 
+					 			found = 1;  
+					 			cprintf("map # %d \n", i);
+					 		}else {
+					 			// if its found the spot is taken, break out of loop 
+					 			if(curproc->wmappings[i]->addr != oldaddr) {
+					 			cprintf("old addr,%x length %d addr in way: %x length in way:%d\n", oldaddr,oldsize, curproc->wmappings[i]->addr, curproc->wmappings[i]->length);
+					 			found = 0;
+					 			break;
+					 			}
+					 		}
+		}
+
+
+		if(found == 1) {
+		int numPages = (newsize-oldsize+4095)/4096;
+		//if(newsize%4096 != 0) 
+			//numPages++; 
+		if(numPages != 0) {
+			 for(int i=0; i<numPages; i++) {
+			 	//	char *mem=kalloc(); 
+
+			 	//	mappages(pgdir, (void *)(oldaddr+oldsize + 4096*i), 4096, V2P(mem), PTE_W|PTE_U);
+			 }
+			 for(int i=0; i<myproc()->wmapCount; i++) {
+			 						if(myproc()->wmappings[i]->addr == oldaddr) {
+				curproc->wmappings[i]->length = newsize;
+			 						}}
+		}
+		}else {
+		cprintf("else %d\n", flags);
+			if(flags == 0) {
+				return -1; 
+			}
+			// gotta move locatinos
+			oldaddr = 0x60000000; // changes addr to start of memory
+					  found = 0; // int checking if a spot in memory is available 
+					 //int count = 0;
+					 while(oldaddr < 0x80000000) {
+					 	if(curproc->wmapCount==0) {
+					 		break;
+					 	}
+					 	for(int i=0; i<curproc->wmapCount; i++) {
+					 		uint curmap= (uint)curproc->wmappings[i]->addr;
 					 		if(!((uint)oldaddr == curmap) && !(curproc->wmappings[i]->addr <= oldaddr &&
 					 			curproc->wmappings[i]->addr+(curproc->wmappings[i]->length) >= oldaddr) &&
 					 			!(curproc->wmappings[i]->addr <= (oldaddr+newsize) &&
 					 			curproc->wmappings[i]->addr+(curproc->wmappings[i]->length) >= (oldaddr+newsize)) &&
 					 			!(curproc->wmappings[i]->addr > (oldaddr) &&
-					 					 			curproc->wmappings[i]->addr< (oldaddr+newsize))) {
+					 			curproc->wmappings[i]->addr< (oldaddr+newsize))) {
 					 			// if there's a spot in memory 
 					 			found = 1;  
 					 		}else {
@@ -228,25 +295,23 @@ uint sys_wremap(void) {
 					 			found = 0;
 					 			break;
 					 		}
-		}*/
-
-
-
-		int numPages = (newsize-oldsize+4095)/4096;
-		//if(newsize%4096 != 0) 
-			//numPages++; 
-		if(numPages != 0) {
-			 for(int i=0; i<numPages; i++) {
-			 		char *mem=kalloc(); 
-
-			 		mappages(pgdir, (void *)(oldaddr+oldsize + 4096*i), 4096, V2P(mem), PTE_W|PTE_U);
-			 }
-			 for(int i=0; i<myproc()->wmapCount; i++) {
-			 						if(myproc()->wmappings[i]->addr == oldaddr) {
-				curproc->wmappings[i]->length = newsize;
-			 						}}
+					 	}
+					 	if(found == 1) {
+					 		// if addr found map it and break out of loop
+					 		curproc->wmappings[index] = (struct wmapInfo *)kalloc();
+					 		curproc->wmappings[index]->addr = oldaddr;
+					 		curproc->wmappings[index]->length = newsize;
+					 		curproc->wmappings[index]->flags = flags;
+					 	//	curproc->wmappings[curproc->wmapCount]->fd = flags;
+					 		//curproc->wmapCount++; 
+					 	//	cprintf("taken %x\n",addr);
+					 		break;
+					 	}
+					 	oldaddr+=0x1000; // increase addr	
+					} 
 		}
 	}
+	cprintf("returing %x", oldaddr);
 //	sys_wunmap(oldaddr);
 //	sys_wmap(oldaddr, newsize, flags);
 	return oldaddr; 
