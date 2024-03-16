@@ -80,79 +80,62 @@ sys_wunmap(void) {
     return unmap_pages(myproc(), addr);
 }
 
-uint 
-sys_wremap(void) {
-    uint oldaddr;
-    int oldsize, newsize, flags;
+uint sys_wremap(void) {
+	uint oldaddr;
+	int oldsize, newsize, flags; 
 
-    if (argint(0, (int *)&oldaddr) < 0 || argint(1, &oldsize) < 0 || argint(2, &newsize) < 0 || argint(3, &flags) < 0) {
-        return (uint)-1; // Error in retrieving arguments
-    }
+  if (argint(0, (int*)&oldaddr) < 0 || argint(1, &oldsize) < 0 || argint(2, &newsize) < 0 || argint(3, &flags) < 0) {
+    return -1;  // if not valid 
+	}
 
-    // Ensure that oldaddr is page aligned
-    if (oldaddr % PGSIZE != 0 || oldsize <= 0 || newsize <= 0) {
-        return (uint)-1; // Invalid arguments
-    }
+  struct proc *curproc = myproc();
+  //pde_t *pgdir = curproc->pgdir; 
 
-    // Ensure that oldsize is consistent with the existing mapping
-    struct proc *p = myproc();
-    int found = 0;
-    for (int i = 0; i < MAX_WMMAP_INFO; i++) {
-        if (p->mmaps[i].used && p->mmaps[i].addr == oldaddr && p->mmaps[i].length == oldsize) {
-            found = 1;
-            break;
-        }
+  // See if given addr is in maps
+  int found = -1;
+  int index = -1;
+  for (int i = 0; i < MAX_WMMAP_INFO; i++) {
+    if(oldaddr == curproc->mmaps->addr){
+      found = 0;
+      index = i;
     }
-    if (!found) {
-        return (uint)-1; // Existing mapping not found
-    }
-
-    // Try to grow/shrink the mapping in-place
-    if (flags == 0) {
-        // Check if there's enough space to grow/shrink in-place
-        // For simplicity, assuming there's always enough space in this example
-        // You may need to handle this more rigorously in a real implementation
-        // Update the length of the existing mapping
-        for (int i = 0; i < MAX_WMMAP_INFO; i++) {
-            if (p->mmaps[i].used && p->mmaps[i].addr == oldaddr && p->mmaps[i].length == oldsize) {
-                p->mmaps[i].length = newsize;
-                return oldaddr; // Return the same address
+  }
+  if(found == -1) { // if not found, Fail
+    return -1;
+  } else {
+    // Shrinking
+    if(newsize <= oldsize) {
+      unmap_pages(curproc, oldaddr+newsize);
+      //update mmaps
+      curproc->mmaps[index].length=newsize;
+      return oldaddr;
+    } else { // Growing
+      //check if theres space to grow in place
+      if(0){
+        //grow in place 
+      } else {
+        //check if flag allows to move
+        if(flags & MREMAP_MAYMOVE) {
+          uint newAddr = find_available_region(curproc, newsize);
+          if(newAddr){ // if region found map to new region
+            unmap_pages(curproc, oldaddr);
+            char *mem = kalloc();
+            memset(mem, 0, PGSIZE);
+            if(mappages(curproc->pgdir, (void *)PGROUNDDOWN(newAddr), PGSIZE, V2P(mem), PTE_W|PTE_U) < 0) {
+              return -1;
             }
+            curproc->mmaps[index].length=newsize;
+            return newAddr;
+          } else { //return fail if not found
+            return -1;
+          }
         }
+      }
+      
     }
-    // Try to move the mapping to a new address
-    else if (flags == MREMAP_MAYMOVE) {
-        // Find a new region for the mapping
-        uint newaddr = find_available_region(p, newsize);
-        if (newaddr == 0) {
-            return (uint)-1; // No available region found
-        }
+  }
 
-        // Copy the existing mapping to the new address
-        if (copy_mapping(p, oldaddr, oldsize, newaddr) < 0) {
-            return (uint)-1; // Failed to copy mapping
-        }
-
-        // Remove the old mapping
-        if (unmap_pages(p, oldaddr) < 0) {
-            return (uint)-1; // Failed to unmap old pages
-        }
-
-        // Record the new mapping in the process's mmaps array
-        for (int i = 0; i < MAX_WMMAP_INFO; i++) {
-            if (!p->mmaps[i].used) {
-                p->mmaps[i].used = 1;
-                p->mmaps[i].addr = newaddr;
-                p->mmaps[i].length = newsize;
-                p->mmaps[i].flags = p->mmaps[i].flags; // Assuming flags remain the same
-                p->mmaps[i].fd = p->mmaps[i].fd; // Assuming file descriptor remains the same
-                p->mmaps[i].file_offset = p->mmaps[i].file_offset; // Assuming file offset remains the same
-                return newaddr; // Return the new address
-            }
-        }
-    }
-
-    return (uint)-1; // Failed to remap
+  return oldaddr;
 }
 
 
